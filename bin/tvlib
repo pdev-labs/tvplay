@@ -17,7 +17,16 @@ DEV="$TV_IP:$TV_PORT"
 TVLOG="${TVPLAY_LOG:-$HOME/tvplay.log}"
 
 tv_log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$TVLOG"; }
-tv_say() { printf 'tv: %s\n' "$*" >&2; }
+tv_say() {
+  tv_log "$*"
+  if [ "${TV_VERBOSE:-0}" = "1" ] || [ "${TV_QUIET:-0}" != "1" ]; then
+    printf 'tv: %s\n' "$*" >&2
+  fi
+}
+tv_err() {
+  tv_log "$*"
+  printf 'tv: %s\n' "$*" >&2
+}
 
 # First usable local IPv4, preferring hotspot/wifi interfaces over mobile data.
 tv_local_ip() {
@@ -82,7 +91,7 @@ tv_playing() {
 
 tv_phone_play() {
   local real="$PREFIX/bin/termux-open"
-  [ -x "$real" ] || { tv_say "termux-open not found"; return 3; }
+  [ -x "$real" ] || { tv_err "termux-open not found"; exit 3; }
   tv_say "falling back to the phone player"
   exec "$real" --chooser --content-type 'video/*' "$1"
 }

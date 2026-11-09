@@ -21,6 +21,7 @@ if [ -n "$TV_IP" ] && [ "${MB_LOCAL:-0}" != "1" ] && [ -x "$HOME/bin/tvplay" ]; 
     esac
   done
   if [ -n "$url" ]; then
+    export TV_QUIET="${TV_QUIET:-1}"
     exec "$HOME/bin/tvplay" "$url"
   fi
 fi

@@ -6,19 +6,20 @@
 #   tvplay "https://example.com/movie.mkv"
 #
 # Environment (~/.tvrc): TV_IP, TV_PORT, TV_WAIT, TV_FALLBACK=manual|auto|off
+# Progress goes to ~/tvplay.log. TV_QUIET=1 hides it, TV_VERBOSE=1 forces it.
 set -u
 
 # shellcheck source=tvlib
 . "$HOME/bin/tvlib"
 
 url="${1:-}"
-[ -n "$url" ] || { tv_say "usage: tvplay <url>"; exit 2; }
+[ -n "$url" ] || { tv_err "usage: tvplay <url>"; exit 2; }
 case "$url" in
   http://*|https://*|rtsp://*|rtmp://*) ;;
-  *) tv_say "not a stream URL: $url"; exit 2 ;;
+  *) tv_err "not a stream URL: $url"; exit 2 ;;
 esac
 case "$url" in
-  *"'"*) tv_say "URL contains a single quote, refusing"; exit 2 ;;
+  *"'"*) tv_err "URL contains a single quote, refusing"; exit 2 ;;
 esac
 
 launch() {
@@ -38,7 +39,7 @@ main() {
   local i=0
 
   if [ -z "$TV_IP" ]; then
-    tv_say "TV_IP not set in ~/.tvrc"
+    tv_say "TV_IP is not set in ~/.tvrc"
     tv_phone_play "$url"
   fi
 
@@ -68,15 +69,8 @@ main() {
 
   case "${TV_FALLBACK:-manual}" in
     auto)
-      tv_say "downloading and serving locally"
-      if tv-fetch "$url" >/dev/null; then
-        local ip
-        ip=$(tv_local_ip)
-        TV_FALLBACK=off tvplay "http://$ip:${TV_SERVE_PORT:-8080}/now"
-      else
-        tv_say "download failed too"
-        return 1
-      fi
+      tv_say "downloading in the background, see ~/tvplay.log"
+      nohup "$HOME/bin/tv-auto" "$url" >/dev/null 2>&1 &
       ;;
     off) return 1 ;;
     *) tv_say "download it with: tv-fetch '$url'" ;;

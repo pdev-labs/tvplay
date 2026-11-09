@@ -31,7 +31,7 @@ case "$ctype" in
       exit 4
     }
     out="$outdir/$stamp.mkv"
-    tv_say "recording HLS to $out (this takes as long as the movie)"
+    tv_say "recording HLS to $out"
     ffmpeg -hide_banner -loglevel warning -y -i "$url" -c copy "$out" || exit 5
     ;;
   *)
@@ -56,6 +56,14 @@ tv_log "fetched: $out"
 
 if ! tv-serve --status >/dev/null 2>&1; then
   tv-serve --daemon >/dev/null 2>&1 || tv_say "could not start tv-serve"
+  tries=0
+  while [ "$tries" -lt 20 ]; do
+    tv-serve --status >/dev/null 2>&1 && break
+    tries=$((tries + 1))
+    sleep 0.25
+  done
 fi
 
 printf '%s\n' "$out"
+ip=$(tv_local_ip)
+[ -n "$ip" ] && printf 'http://%s:%s/%s\n' "$ip" "${TV_SERVE_PORT:-8080}" "$(basename "$out")"

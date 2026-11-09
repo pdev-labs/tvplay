@@ -10,7 +10,7 @@ src="$(cd "$(dirname "$0")" && pwd)"
 bin="$HOME/bin"
 mkdir -p "$bin"
 
-for f in tvlib tvplay tv-fetch tv-doctor tv-discover tv-serve termux-open; do
+for f in tvlib tvplay tv-auto tv-fetch tv-doctor tv-discover tv-serve termux-open; do
   install -m 755 "$src/bin/$f" "$bin/$f"
 done
 

@@ -38,27 +38,24 @@ mimetypes.add_type("video/mp2t", ".ts")
 mimetypes.add_type("video/mp2t", ".m2ts")
 
 
-def find_newest(roots):
-    """Newest video file under any of roots -> (path, root) or (None, None)."""
-    for root in roots:
-        if not root or not os.path.isdir(root):
-            continue
-        best, best_mtime = None, -1.0
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-            for name in filenames:
-                if os.path.splitext(name)[1].lower() not in VIDEO_EXT:
-                    continue
-                path = os.path.join(dirpath, name)
-                try:
-                    mtime = os.path.getmtime(path)
-                except OSError:
-                    continue
-                if mtime > best_mtime:
-                    best, best_mtime = path, mtime
-        if best:
-            return best, root
-    return None, None
+def find_newest(root):
+    """Newest video file under root, or None."""
+    if not root or not os.path.isdir(root):
+        return None
+    best, best_mtime = None, -1.0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for name in filenames:
+            if os.path.splitext(name)[1].lower() not in VIDEO_EXT:
+                continue
+            path = os.path.join(dirpath, name)
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            if mtime > best_mtime:
+                best, best_mtime = path, mtime
+    return best
 
 
 class LimitedFile:
@@ -89,11 +86,11 @@ class Handler(SimpleHTTPRequestHandler):
         return urllib.parse.urlsplit(self.path).path.rstrip("/") == "/now"
 
     def _send_now(self):
-        path, root = find_newest(self.server.roots)
+        path = find_newest(self.server.root)
         if not path:
             self.send_error(404, "no video files yet")
             return
-        rel = os.path.relpath(path, root).replace(os.sep, "/")
+        rel = os.path.relpath(path, self.server.root).replace(os.sep, "/")
         location = "/" + urllib.parse.quote(rel)
         self.send_response(302)
         self.send_header("Location", location)
@@ -169,8 +166,8 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, handler, roots):
-        self.roots = roots
+    def __init__(self, address, handler, root):
+        self.root = root
         super().__init__(address, handler)
 
 
@@ -223,7 +220,6 @@ def daemonize():
 def main():
     parser = argparse.ArgumentParser(description="serve media to VLC on the TV")
     parser.add_argument("--dir", default=os.path.expanduser("~/storage/downloads/tv"))
-    parser.add_argument("--fallback-dir", default=os.path.expanduser("~/storage/downloads"))
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--bind", default="0.0.0.0")
     parser.add_argument("--daemon", action="store_true")
@@ -249,8 +245,6 @@ def main():
         print("stopped pid %d" % pid)
         return 0
 
-    roots = [args.dir, args.fallback_dir]
-
     if args.daemon:
         pid = running_pid()
         if pid:
@@ -260,7 +254,7 @@ def main():
 
     handler = functools.partial(Handler, directory=args.dir)
     try:
-        server = Server((args.bind, args.port), handler, roots)
+        server = Server((args.bind, args.port), handler, args.dir)
     except OSError as error:
         sys.stderr.write("cannot bind %s:%d: %s\n" % (args.bind, args.port, error))
         return 1
