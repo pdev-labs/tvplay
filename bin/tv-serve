@@ -1,0 +1,292 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 pdev-labs
+"""tv-serve - stream a folder to VLC on the TV.
+
+Better than `python -m http.server` for this job:
+  * honours HTTP byte ranges, so seeking in VLC works
+  * /now redirects to the newest video file, so one saved URL always plays
+    whatever you downloaded last
+
+  tv-serve                 run in the foreground
+  tv-serve --daemon        run in the background (pidfile ~/.tvserve.pid)
+  tv-serve --status        exit 0 if one is running
+  tv-serve --stop          stop the background server
+"""
+
+import argparse
+import functools
+import mimetypes
+import os
+import re
+import socket
+import subprocess
+import sys
+import urllib.parse
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+VIDEO_EXT = {
+    ".mp4", ".mkv", ".webm", ".avi", ".mov", ".m4v", ".ts", ".m2ts",
+    ".mpg", ".mpeg", ".flv", ".wmv", ".3gp", ".ogv",
+}
+
+PIDFILE = os.path.expanduser("~/.tvserve.pid")
+LOGFILE = os.path.expanduser("~/tvserve.log")
+
+mimetypes.add_type("video/x-matroska", ".mkv")
+mimetypes.add_type("video/mp2t", ".ts")
+mimetypes.add_type("video/mp2t", ".m2ts")
+
+
+def find_newest(roots):
+    """Newest video file under any of roots -> (path, root) or (None, None)."""
+    for root in roots:
+        if not root or not os.path.isdir(root):
+            continue
+        best, best_mtime = None, -1.0
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+            for name in filenames:
+                if os.path.splitext(name)[1].lower() not in VIDEO_EXT:
+                    continue
+                path = os.path.join(dirpath, name)
+                try:
+                    mtime = os.path.getmtime(path)
+                except OSError:
+                    continue
+                if mtime > best_mtime:
+                    best, best_mtime = path, mtime
+        if best:
+            return best, root
+    return None, None
+
+
+class LimitedFile:
+    """Read at most n bytes, so a 206 response stops at the range end."""
+
+    def __init__(self, handle, limit):
+        self.handle = handle
+        self.left = limit
+
+    def read(self, size=-1):
+        if self.left <= 0:
+            return b""
+        if size is None or size < 0 or size > self.left:
+            size = self.left
+        data = self.handle.read(size)
+        self.left -= len(data)
+        return data
+
+    def close(self):
+        self.handle.close()
+
+
+class Handler(SimpleHTTPRequestHandler):
+    server_version = "tvserve/1.0"
+
+    # -- /now ------------------------------------------------------------
+    def _is_now(self):
+        return urllib.parse.urlsplit(self.path).path.rstrip("/") == "/now"
+
+    def _send_now(self):
+        path, root = find_newest(self.server.roots)
+        if not path:
+            self.send_error(404, "no video files yet")
+            return
+        rel = os.path.relpath(path, root).replace(os.sep, "/")
+        location = "/" + urllib.parse.quote(rel)
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store, max-age=0")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_GET(self):
+        if self._is_now():
+            return self._send_now()
+        super().do_GET()
+
+    def do_HEAD(self):
+        if self._is_now():
+            return self._send_now()
+        super().do_HEAD()
+
+    # -- byte ranges -----------------------------------------------------
+    def send_head(self):
+        path = self.translate_path(self.path)
+        if os.path.isdir(path) or not os.path.isfile(path):
+            return super().send_head()
+
+        ctype = self.guess_type(path)
+        try:
+            handle = open(path, "rb")
+        except OSError:
+            self.send_error(404, "file not found")
+            return None
+
+        stat = os.fstat(handle.fileno())
+        size = stat.st_size
+        header = self.headers.get("Range", "")
+
+        match = re.match(r"^\s*bytes=(\d*)-(\d*)\s*$", header)
+        if match:
+            first, last = match.groups()
+            if first:
+                start = int(first)
+                end = int(last) if last else size - 1
+            else:
+                length = int(last or 0)
+                start = max(0, size - length)
+                end = size - 1
+            if start >= size or start > end:
+                self.send_response(416)
+                self.send_header("Content-Range", "bytes */%d" % size)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                handle.close()
+                return None
+            end = min(end, size - 1)
+            handle.seek(start)
+            self.send_response(206)
+            self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(end - start + 1))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Last-Modified", self.date_time_string(stat.st_mtime))
+            self.end_headers()
+            return LimitedFile(handle, end - start + 1)
+
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(size))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Last-Modified", self.date_time_string(stat.st_mtime))
+        self.end_headers()
+        return handle
+
+
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, address, handler, roots):
+        self.roots = roots
+        super().__init__(address, handler)
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def running_pid():
+    try:
+        with open(PIDFILE) as handle:
+            pid = int(handle.read().strip())
+    except (OSError, ValueError):
+        return None
+    return pid if pid_alive(pid) else None
+
+
+def local_ips():
+    try:
+        out = subprocess.run(
+            ["ip", "-4", "addr"], capture_output=True, text=True, timeout=3
+        ).stdout
+        found = re.findall(r"inet (\d+\.\d+\.\d+\.\d+)/", out)
+        return [ip for ip in found if not ip.startswith("127.")]
+    except Exception:
+        try:
+            return [socket.gethostbyname(socket.gethostname())]
+        except OSError:
+            return []
+
+
+def daemonize():
+    if os.fork() > 0:
+        os._exit(0)
+    os.setsid()
+    if os.fork() > 0:
+        os._exit(0)
+    os.chdir("/")
+    os.umask(0o022)
+    handle = os.open(LOGFILE, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    os.dup2(handle, 1)
+    os.dup2(handle, 2)
+    devnull = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(devnull, 0)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="serve media to VLC on the TV")
+    parser.add_argument("--dir", default=os.path.expanduser("~/storage/downloads/tv"))
+    parser.add_argument("--fallback-dir", default=os.path.expanduser("~/storage/downloads"))
+    parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--bind", default="0.0.0.0")
+    parser.add_argument("--daemon", action="store_true")
+    parser.add_argument("--status", action="store_true")
+    parser.add_argument("--stop", action="store_true")
+    args = parser.parse_args()
+
+    if args.status:
+        pid = running_pid()
+        print("running pid %d" % pid if pid else "not running")
+        return 0 if pid else 1
+
+    if args.stop:
+        pid = running_pid()
+        if not pid:
+            print("not running")
+            return 1
+        os.kill(pid, 15)
+        try:
+            os.unlink(PIDFILE)
+        except OSError:
+            pass
+        print("stopped pid %d" % pid)
+        return 0
+
+    roots = [args.dir, args.fallback_dir]
+
+    if args.daemon:
+        pid = running_pid()
+        if pid:
+            print("already running pid %d" % pid)
+            return 0
+        daemonize()
+
+    handler = functools.partial(Handler, directory=args.dir)
+    try:
+        server = Server((args.bind, args.port), handler, roots)
+    except OSError as error:
+        sys.stderr.write("cannot bind %s:%d: %s\n" % (args.bind, args.port, error))
+        return 1
+
+    try:
+        with open(PIDFILE, "w") as handle:
+            handle.write(str(os.getpid()))
+    except OSError:
+        pass
+
+    for ip in local_ips():
+        print("http://%s:%d/now" % (ip, args.port))
+    sys.stdout.flush()
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+        try:
+            os.unlink(PIDFILE)
+        except OSError:
+            pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

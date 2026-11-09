@@ -1,0 +1,88 @@
+# shellcheck shell=bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 pdev-labs
+# Shared helpers for the tv* scripts. Sourced, never executed directly.
+
+TV_IP=""
+TV_PORT=5555
+TV_SERVE_PORT=8080
+TV_DIR="$HOME/storage/downloads/tv"
+TV_DL_DIR="$HOME/storage/downloads"
+TV_WAIT=20
+TV_FALLBACK=manual
+[ -f "$HOME/.tvrc" ] && . "$HOME/.tvrc"
+
+PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+DEV="$TV_IP:$TV_PORT"
+TVLOG="${TVPLAY_LOG:-$HOME/tvplay.log}"
+
+tv_log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$TVLOG"; }
+tv_say() { printf 'tv: %s\n' "$*" >&2; }
+
+# First usable local IPv4, preferring hotspot/wifi interfaces over mobile data.
+tv_local_ip() {
+  if command -v ip >/dev/null 2>&1; then
+    ip -4 addr 2>/dev/null | awk '
+      /^[0-9]+: / { n = $2; sub(/:$/, "", n) }
+      /^[[:space:]]*inet / {
+        split($2, a, "/"); addr = a[1]
+        if (addr ~ /^127\./) next
+        if (n ~ /^(swlan|softap|ap|wlan|eth)[0-9]*$/ && pref == "") { pref = addr }
+        else if (fb == "" && n !~ /^(rmnet|ccmni|pdp|dummy|tun|ppp)/ &&
+                 addr ~ /^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)/) { fb = addr }
+      }
+      END { print (pref != "" ? pref : fb) }'
+  elif command -v ifconfig >/dev/null 2>&1; then
+    ifconfig 2>/dev/null | awk '/inet /{print $2}' |
+      awk '/^(10\.|192\.168\.|172\.)/{print; exit}'
+  fi
+}
+
+tv_adb_up() {
+  [ -n "$TV_IP" ] || return 1
+  adb connect "$DEV" >/dev/null 2>&1
+  [ "$(adb -s "$DEV" get-state 2>/dev/null)" = "device" ]
+}
+
+# Scan the hotspot subnet for whatever answers on the ADB port.
+tv_discover() {
+  local ip net found
+  if ! command -v nmap >/dev/null 2>&1; then
+    tv_say "nmap not installed: pkg install nmap"
+    return 1
+  fi
+  ip=$(tv_local_ip)
+  [ -n "$ip" ] || { tv_say "cannot determine this phone's IP"; return 1; }
+  net="${ip%.*}.0/24"
+  tv_say "scanning $net for port $TV_PORT"
+  found=$(nmap -n -p "$TV_PORT" --open -T4 "$net" 2>/dev/null |
+    awk '/Nmap scan report/ { gsub(/[()]/, "", $NF); print $NF; exit }')
+  [ -n "$found" ] || { tv_say "no ADB host on $net"; return 1; }
+  TV_IP="$found"
+  DEV="$TV_IP:$TV_PORT"
+  if [ -w "$HOME/.tvrc" ] && grep -q '^TV_IP=' "$HOME/.tvrc"; then
+    sed -i "s/^TV_IP=.*/TV_IP=$TV_IP/" "$HOME/.tvrc"
+  fi
+  tv_say "TV at $TV_IP"
+}
+
+# True when VLC on the TV reports an active playback session.
+tv_playing() {
+  local dump
+  dump=$(adb -s "$DEV" shell dumpsys media_session 2>/dev/null) || return 1
+  case "$dump" in
+    *org.videolan.vlc*) ;;
+    *) return 1 ;;
+  esac
+  case "$dump" in
+    *"state=PlaybackState {state=3"*) return 0 ;;
+  esac
+  return 1
+}
+
+tv_phone_play() {
+  local real="$PREFIX/bin/termux-open"
+  [ -x "$real" ] || { tv_say "termux-open not found"; return 3; }
+  tv_say "falling back to the phone player"
+  exec "$real" --chooser --content-type 'video/*' "$1"
+}

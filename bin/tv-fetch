@@ -1,0 +1,61 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 pdev-labs
+# tv-fetch - download a stream locally so it can be served to the TV.
+# Handles direct files (aria2/curl) and HLS playlists (ffmpeg).
+#
+#   tv-fetch "https://example.com/movie.mkv"
+set -u
+
+# shellcheck source=tvlib
+. "$HOME/bin/tvlib"
+
+url="${1:-}"
+[ -n "$url" ] || { tv_say "usage: tv-fetch <url>"; exit 2; }
+
+outdir="${TV_DIR:-$HOME/storage/downloads/tv}"
+mkdir -p "$outdir" 2>/dev/null || { outdir="$HOME/downloads/tv"; mkdir -p "$outdir"; }
+
+stamp=$(date +%Y%m%d-%H%M%S)
+ctype=""
+if command -v curl >/dev/null 2>&1; then
+  ctype=$(curl -sIL --max-time 20 "$url" 2>/dev/null |
+    awk 'tolower($1) == "content-type:" { sub(/;.*/, "", $2); c = $2 }
+         END { print tolower(c) }')
+fi
+
+case "$ctype" in
+  *mpegurl*|*m3u8*|*vnd.apple*)
+    command -v ffmpeg >/dev/null 2>&1 || {
+      tv_say "HLS stream needs ffmpeg: pkg install ffmpeg"
+      exit 4
+    }
+    out="$outdir/$stamp.mkv"
+    tv_say "recording HLS to $out (this takes as long as the movie)"
+    ffmpeg -hide_banner -loglevel warning -y -i "$url" -c copy "$out" || exit 5
+    ;;
+  *)
+    ext=mp4
+    case "$ctype" in
+      *matroska*) ext=mkv ;;
+      *webm*) ext=webm ;;
+      *mp2t*) ext=ts ;;
+    esac
+    out="$outdir/$stamp.$ext"
+    tv_say "downloading to $out"
+    if command -v aria2c >/dev/null 2>&1; then
+      aria2c -q -x8 -s8 -k1M -d "$outdir" -o "$stamp.$ext" "$url" || exit 5
+    else
+      curl -L --retry 3 -o "$out" "$url" || exit 5
+    fi
+    ;;
+esac
+
+[ -s "$out" ] || { tv_say "download produced nothing"; exit 5; }
+tv_log "fetched: $out"
+
+if ! tv-serve --status >/dev/null 2>&1; then
+  tv-serve --daemon >/dev/null 2>&1 || tv_say "could not start tv-serve"
+fi
+
+printf '%s\n' "$out"

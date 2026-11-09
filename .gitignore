@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.log
+.tvserve.pid
+.tvrc
+.DS_Store

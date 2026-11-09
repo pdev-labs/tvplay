@@ -1,0 +1,11 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 pdev-labs
+# tv-discover - find the TV's ADB address on the current hotspot.
+set -u
+
+# shellcheck source=tvlib
+. "$HOME/bin/tvlib"
+
+tv_discover || exit 1
+echo "TV_IP=$TV_IP"

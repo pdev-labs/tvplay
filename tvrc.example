@@ -1,0 +1,9 @@
+# ~/.tvrc - settings for tvplay / tv-fetch / tv-serve / tv-doctor
+# TV address on the hotspot. Run `tv-discover` if the TV gets a new IP.
+TV_IP=192.168.1.50
+TV_PORT=5555
+TV_SERVE_PORT=8080
+TV_DIR="$HOME/storage/downloads/tv"
+TV_WAIT=20
+# manual: tell you what to do | auto: download + serve on failure | off: nothing
+TV_FALLBACK=manual

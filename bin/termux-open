@@ -1,0 +1,28 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 pdev-labs
+# ~/bin/termux-open - shadow the real termux-open so that moviebox-tui's
+# "play" action lands on the TV instead of the phone.
+#
+#   TV_IP set        -> forward the stream URL to tvplay (TV)
+#   TV_IP empty      -> normal phone playback
+#   MB_LOCAL=1       -> force phone playback even when TV_IP is set
+set -u
+
+PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+TV_IP=""
+[ -f "$HOME/.tvrc" ] && . "$HOME/.tvrc"
+
+if [ -n "$TV_IP" ] && [ "${MB_LOCAL:-0}" != "1" ] && [ -x "$HOME/bin/tvplay" ]; then
+  url=""
+  for arg in "$@"; do
+    case "$arg" in
+      http://*|https://*|rtsp://*) url="$arg" ;;
+    esac
+  done
+  if [ -n "$url" ]; then
+    exec "$HOME/bin/tvplay" "$url"
+  fi
+fi
+
+exec "$PREFIX/bin/termux-open" "$@"

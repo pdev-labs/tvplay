@@ -1,0 +1,99 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 pdev-labs
+# tv-doctor - check every link in the phone -> TV chain.
+set -u
+
+# shellcheck source=tvlib
+. "$HOME/bin/tvlib"
+
+fails=0
+ok() { printf '  %-12s %s\n' "$1" "$2"; }
+
+echo "settings"
+ok "TV" "${TV_IP:-unset}:${TV_PORT:-5555}"
+ok "serve" "port ${TV_SERVE_PORT:-8080}, dir ${TV_DIR:-?}"
+ok "fallback" "${TV_FALLBACK:-manual}"
+
+echo "phone"
+ip=$(tv_local_ip)
+[ -n "$ip" ] && ok "ip" "$ip" || { ok "ip" "unknown"; fails=$((fails + 1)); }
+if [ -d "$HOME/storage/downloads" ]; then
+  ok "storage" "$HOME/storage/downloads"
+else
+  ok "storage" "missing, run termux-setup-storage"
+  fails=$((fails + 1))
+fi
+
+echo "tv"
+if [ -z "${TV_IP:-}" ]; then
+  ok "address" "not configured in ~/.tvrc"
+  fails=$((fails + 1))
+else
+  if ping -c1 -W2 "$TV_IP" >/dev/null 2>&1; then
+    ok "ping" "ok"
+  else
+    ok "ping" "no answer"
+    fails=$((fails + 1))
+  fi
+  if (exec 3<>"/dev/tcp/$TV_IP/$TV_PORT") 2>/dev/null; then
+    ok "port $TV_PORT" "open"
+  else
+    ok "port $TV_PORT" "closed"
+    fails=$((fails + 1))
+  fi
+fi
+
+echo "adb"
+if ! command -v adb >/dev/null 2>&1; then
+  ok "adb" "not installed (pkg install android-tools)"
+  fails=$((fails + 1))
+else
+  adb connect "$DEV" >/dev/null 2>&1
+  state=$(adb devices 2>/dev/null | awk -v d="$DEV" '$1 == d { print $2 }')
+  case "${state:-none}" in
+    device)
+      ok "state" "device"
+      if adb -s "$DEV" shell pm list packages 2>/dev/null | grep -q 'org.videolan.vlc'; then
+        ok "VLC" "installed on TV"
+      else
+        ok "VLC" "MISSING on TV"
+        fails=$((fails + 1))
+      fi
+      ;;
+    unauthorized)
+      ok "state" "unauthorized - accept the dialog on the TV"
+      fails=$((fails + 1))
+      ;;
+    *)
+      ok "state" "${state:-unreachable}"
+      fails=$((fails + 1))
+      ;;
+  esac
+fi
+
+echo "server"
+if tv-serve --status >/dev/null 2>&1; then
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+    "http://127.0.0.1:${TV_SERVE_PORT:-8080}/now" 2>/dev/null)
+  ok "status" "running (/now -> ${code:-?})"
+else
+  ok "status" "not running (starts with tv-fetch, or: tv-serve --daemon)"
+fi
+
+echo "tools"
+for tool in nmap ffmpeg aria2c; do
+  if command -v "$tool" >/dev/null 2>&1; then
+    ok "$tool" "ok"
+  else
+    ok "$tool" "missing"
+  fi
+done
+
+echo
+if [ "$fails" -eq 0 ]; then
+  echo "all good."
+else
+  echo "$fails problem(s). tip: termux-wake-lock before a long session."
+fi
+[ "$fails" -eq 0 ]
