@@ -23,16 +23,19 @@ case "$url" in
 esac
 
 launch() {
-  local out
+  local out act
+  for act in .StartActivity .gui.MainActivity; do
+    out=$(adb -s "$DEV" shell \
+      "am start -n org.videolan.vlc/$act -a android.intent.action.VIEW -d '$1' -t 'video/*'" 2>&1)
+    case "$out" in
+      *Error*|*Exception*) continue ;;
+    esac
+    tv_log "am $act: $out"
+    return 0
+  done
   out=$(adb -s "$DEV" shell \
-    "am start -n org.videolan.vlc/.gui.MainActivity -a android.intent.action.VIEW -d '$1' -t 'video/*'" 2>&1)
-  case "$out" in
-    *Error*|*Exception*)
-      out=$(adb -s "$DEV" shell \
-        "am start -a android.intent.action.VIEW -d '$1' -t 'video/*'" 2>&1)
-      ;;
-  esac
-  tv_log "am: $out"
+    "am start -a android.intent.action.VIEW -d '$1' -t 'video/*'" 2>&1)
+  tv_log "am implicit: $out"
 }
 
 main() {

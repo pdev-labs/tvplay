@@ -75,18 +75,16 @@ tv_discover() {
   tv_say "TV at $TV_IP"
 }
 
-# True when VLC on the TV reports an active playback session.
+# True when VLC on the TV reports an active playback session. Matches inside
+# the VLC session block only, so another app's playing state cannot fool it.
 tv_playing() {
   local dump
   dump=$(adb -s "$DEV" shell dumpsys media_session 2>/dev/null) || return 1
-  case "$dump" in
-    *org.videolan.vlc*) ;;
-    *) return 1 ;;
-  esac
-  case "$dump" in
-    *"state=PlaybackState {state=3"*) return 0 ;;
-  esac
-  return 1
+  printf '%s\n' "$dump" | awk '
+    /package=org.videolan.vlc/ { in_vlc = 1; next }
+    /package=/ { in_vlc = 0 }
+    in_vlc && /state=PlaybackState \{state=3/ { found = 1 }
+    END { exit(found ? 0 : 1) }'
 }
 
 tv_phone_play() {
