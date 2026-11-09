@@ -163,10 +163,11 @@ local file, and `tv-serve` gives the TV a plain HTTP URL.
 - Logs are written to `~/tvplay.log` and `~/tvserve.log`.
 - To remove it, delete the `tv*` scripts and `termux-open` from `~/bin`, then delete `~/.tvrc`.
 
-## Tested on
+## Built for
 
 A Vivo T4x running Android 16 with Termux, and a Haier H32K82FX Google TV
-running VLC.
+running VLC. Other Android TV and Google TV sets need the same two things: VLC,
+and an open ADB port.
 
 ## License
 
